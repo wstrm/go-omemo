@@ -1,8 +1,8 @@
 package main
 
 /*
-#cgo CFLAGS: -g -Wall -I./src
-#cgo LDFLAGS: -L./build/src -lomemo-c -lm
+#cgo CFLAGS: -g -Wall -I./libomemo-c/src
+#cgo LDFLAGS: -L./libomemo-c/build/src -lomemo-c -lm
 #include <stdlib.h>
 #include "signal_protocol.h"
 #include "signal_protocol_types.h"
@@ -65,16 +65,14 @@ void call_go_unlock(void *user_data);
 */
 import "C"
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"fmt"
+	"hash"
+	"runtime/cgo"
 	"sync"
 	"unsafe"
 )
-
-// unsafeExternPointer for when you know what you're doing (I don't).
-// This will bypass the unsafe.Pointer misuse check by vet.
-func unsafeExternPointer(addr uintptr) unsafe.Pointer {
-	return *(*unsafe.Pointer)(unsafe.Pointer(&addr))
-}
 
 //export goEncrypt
 func goEncrypt(
@@ -114,27 +112,67 @@ func goUnlock(userData unsafe.Pointer) {
 
 //export goHmacSha256Init
 func goHmacSha256Init(hmacContext *unsafe.Pointer, key *C.uint8_t, keyLen C.size_t, userData unsafe.Pointer) C.int {
-	return C.int(-1) // TODO
+	mac := hmacSha256New(
+		C.GoBytes(unsafe.Pointer(key), C.int(keyLen)),
+	)
+
+	hmacHandle := cgo.NewHandle(mac)
+	*hmacContext = unsafe.Pointer(&hmacHandle)
+
+	return C.int(0)
+}
+
+// hmacSha256New create a new HMAC SHA256 writer.
+func hmacSha256New(key []byte) hash.Hash {
+	return hmac.New(sha256.New, key)
 }
 
 //export goHmacSha256Update
 func goHmacSha256Update(hmacContext unsafe.Pointer, data *C.uint8_t, dataLen C.size_t, userData unsafe.Pointer) C.int {
-	return C.int(-1) // TODO
+	hmacHandle := *(*cgo.Handle)(hmacContext)
+	hmacSha265Write(
+		hmacHandle.Value().(hash.Hash),
+		C.GoBytes(unsafe.Pointer(data), C.int(dataLen)),
+	)
+
+	return C.int(0)
+}
+
+// hmacSha265Write writes the given data to the mac object.
+func hmacSha265Write(mac hash.Hash, data []byte) {
+	mac.Write(data)
 }
 
 //export goHmacSha256Final
 func goHmacSha256Final(hmacContext unsafe.Pointer, output **C.signal_buffer, userData unsafe.Pointer) C.int {
-	return C.int(-1) // TODO
+	hmacHandle := *(*cgo.Handle)(hmacContext)
+	hmacSum := hmacSha256Sum(
+		hmacHandle.Value().(hash.Hash),
+	)
+
+	*output = C.signal_buffer_create(
+		(*C.uchar)(&hmacSum[0]),
+		C.ulong(len(hmacSum)),
+	)
+
+	return C.int(0)
+}
+
+func hmacSha256Sum(mac hash.Hash) []byte {
+	return mac.Sum(nil)
 }
 
 //export goHmacSha256Cleanup
 func goHmacSha256Cleanup(hmacContext unsafe.Pointer, userData unsafe.Pointer) {
-	// TODO
+	hmacHandle := *(*cgo.Handle)(hmacContext)
+	hmacHandle.Delete()
 }
 
 func main() {
 	var globalContext *C.signal_context
-	var userData = unsafeExternPointer(0) // TODO: Should it really be a zero pointer?
+
+	userDataHandle := cgo.NewHandle(nil)
+	var userData = unsafe.Pointer(&userDataHandle) // TODO: Should it really be a zero pointer?
 
 	// TODO: Implement all the provider callbacks.
 	provider := C.signal_crypto_provider{
